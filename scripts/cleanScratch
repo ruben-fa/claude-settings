@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Deletes files or folders in Claude's session scratchpad, and nothing else: each path must be
+# inside /private/tmp/claude-<uid>/<project>/<session>/scratchpad/ once `..` and symbolic links in
+# its folders are resolved. If any path is outside, nothing is deleted. Paths that don't exist are
+# skipped. A symbolic link is deleted itself, not what it points to.
+#
+# A permission rule can't do this safely: `Bash(/bin/rm -f /private/tmp/claude-*)` also matches
+# any paths after the first. This script checks every path itself, so it's safe to allow, and
+# ~/.claude/settings.json allows it in every repository (see ~/.claude/CLAUDE.md).
+#
+# User-level copy of scripts/cleanScratch in the wedding101 repository; keep the two the same.
+#
+# Usage: ~/.claude/scripts/cleanScratch <path>...
+set -euo pipefail
+
+case "${1:-}" in
+  -h | --help)
+    sed -n '2,/^set -euo/p' "$0" | sed -e '$d' -e 's/^# \{0,1\}//'
+    exit 0
+    ;;
+  "")
+    echo "Usage: ~/.claude/scripts/cleanScratch <path>... (see --help)" >&2
+    exit 2
+    ;;
+esac
+
+scratchpad="^(/private)?/tmp/claude-$(id -u)/[^/]+/[^/]+/scratchpad/[^/]+"
+targets=()
+outside=()
+for path in "$@"; do
+  if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+    echo "– Not there: $path"
+    continue
+  fi
+  name=$(basename -- "$path")
+  real="$(cd -- "$(dirname -- "$path")" && pwd -P)/$name"
+  if [[ $name != . && $name != .. && $real =~ $scratchpad ]]; then
+    targets+=("$real")
+  else
+    outside+=("$path")
+  fi
+done
+
+if [ ${#outside[@]} -gt 0 ]; then
+  printf '  %s\n' "${outside[@]}" >&2
+  echo "✘ Only paths inside Claude's scratchpad can be deleted, and the above aren't. Nothing was deleted." >&2
+  exit 1
+fi
+
+for real in ${targets[@]+"${targets[@]}"}; do
+  rm -rf -- "$real"
+  echo "✔ Deleted $real"
+done

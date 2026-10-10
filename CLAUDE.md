@@ -1,0 +1,6 @@
+# Preferences across repositories
+
+- **Change files with the Edit or Write tool,** not with Python, sed or other scripts run through the shell, so the exact diff is visible. Several small changes in one file are several Edit calls. Scripts are fine for reading and checking files.
+- **No auto memory** (it's turned off in `~/.claude/settings.json`). Anything worth keeping for later sessions goes in a CLAUDE.md instead: the repository's `CLAUDE.md` for rules about that project, or this file for preferences across repositories. Propose the line and where it goes, and add it once agreed. A repository change goes through that repository's usual commit and PR process.
+- **Delete scratchpad files with `~/.claude/scripts/cleanScratch <path>…`,** not `rm`. It only deletes inside Claude's scratchpad, so `~/.claude/settings.json` allows it without a prompt.
+- **Keep permission rules simple.** Before a complex one-off shell command (a `python3 -c` one-liner, a long pipeline, an inline script), check whether a dedicated tool or a simple command such as `jq` does the job. A one-off can't be allowed safely, so each one means a prompt or a rule that never matches again. When the same kind of command keeps coming back, propose a small script in the repository that checks its own input, with a narrow allow rule, rather than broad or one-off rules.

@@ -1,0 +1,13 @@
+# Track only what's listed below; ignore everything Claude Code writes here.
+/*
+!/.gitignore
+!/CLAUDE.md
+!/settings.json
+!/keybindings.json
+!/scripts/
+!/skills/
+# Skills synced from claude.ai are downloaded again; not yours to version.
+/skills/synced/
+/skills/.trash/
+!/commands/
+!/agents/
