@@ -96,7 +96,21 @@
       "Bash(cat >*)",
       "Bash(cat >>*)",
       "Bash(cat <<*)",
-      "Bash(tee *)"
+      "Bash(tee *)",
+      "Edit(~/.claude/CLAUDE.md)",
+      "Edit(~/.claude/settings.json)",
+      "Edit(~/.claude/settings.local.json)",
+      "Edit(~/.claude/keybindings.json)",
+      "Edit(~/.claude/.gitignore)",
+      "Edit(~/.claude/.git/**)",
+      "Edit(~/.claude/scripts/**)",
+      "Edit(~/.claude/skills/**)",
+      "Edit(~/.claude/commands/**)",
+      "Edit(~/.claude/agents/**)",
+      "Edit(~/.claude.json)",
+      "Edit(~/.claude/.claude.json)",
+      "Edit(//**/.claude/settings.local.json)",
+      "Edit(//**/.claude/settings.json)"
     ]
   }
 }
