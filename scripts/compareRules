@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# Compares Claude Code permission rules across settings files, and shows what they decide for
+# commands. The files are, by default: the user settings (~/.claude/settings.json, "global"), and
+# the current repository's .claude/settings.json ("project") and .claude/settings.local.json
+# ("local"), where they exist; outside a git repository, the current folder's. --file replaces
+# them, e.g. to compare today's rules with a draft of new ones.
+#
+# Without commands it lists every rule, grouped by the files it's in: only in global, only in
+# project, in both, and so on.
+#
+# With commands (arguments, or one per line on stdin with -) it prints, for each command, what
+# each file decides on its own and what all of them decide together ("all"):
+#   denied   a deny rule matches;
+#   asks     an ask rule matches, and no deny rule;
+#   runs     an allow rule matches, and no deny or ask rule;
+#   default  no rule matches, so Claude Code decides: its built-in read-only commands run, other
+#            commands ask in the normal mode, and auto mode leaves them to its classifier.
+#
+# It follows the documented matching (https://code.claude.com/docs/en/permissions): deny, then
+# ask, then allow, across all files; `*` matches any text, spaces included; a trailing ` *` (or
+# `:*`) also matches the bare command when it's the only `*`; matching is case-sensitive. But it's
+# an imitation, not Claude Code's own matcher: it only reads Bash rules, takes one simple command
+# per line (no splitting at `&&`, `|` or `;`, no stripping of wrappers such as `timeout`), and
+# doesn't know Claude Code's built-in read-only commands.
+#
+# User-level script, documented in ~/.claude/CLAUDE.md and allowed in ~/.claude/settings.json.
+#
+# Usage: ~/.claude/scripts/compareRules [--file <settings.json>]... [<command>... | -]
+#   ~/.claude/scripts/compareRules
+#   ~/.claude/scripts/compareRules 'git push --mi origin' 'git reset --ha'
+#   ~/.claude/scripts/compareRules --file ~/.claude/settings.json --file draft.json - < commands.txt
+set -euo pipefail
+
+stop() {
+  echo "✘ $1" >&2
+  exit 1
+}
+
+files=()
+commands=()
+from_stdin=false
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --file)
+      files+=("${2:?--file needs a settings file}")
+      shift
+      ;;
+    -h | --help)
+      sed -n '2,/^set -euo/p' "$0" | sed -e '$d' -e 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    -) from_stdin=true ;;
+    -*)
+      echo "Unknown option: $1 (see --help)" >&2
+      exit 2
+      ;;
+    *) commands+=("$1") ;;
+  esac
+  shift
+done
+if $from_stdin; then
+  while IFS= read -r line; do
+    [ -z "$line" ] || commands+=("$line")
+  done
+fi
+
+root=$(git rev-parse --show-toplevel 2> /dev/null) || root=$PWD
+if [ ${#files[@]} -eq 0 ]; then
+  for file in "$HOME/.claude/settings.json" "$root/.claude/settings.json" "$root/.claude/settings.local.json"; do
+    [ ! -f "$file" ] || files+=("$file")
+  done
+  [ ${#files[@]} -gt 0 ] || stop "No settings files found."
+fi
+
+labels=()
+for file in "${files[@]}"; do
+  [ -f "$file" ] || stop "No such file: $file"
+  jq -e 'type == "object"' "$file" > /dev/null 2>&1 || stop "Not a settings file (invalid JSON): $file"
+  case "$file" in
+    "$HOME/.claude/settings.json") labels+=(global) ;;
+    "$root/.claude/settings.json") labels+=(project) ;;
+    "$root/.claude/settings.local.json") labels+=(local) ;;
+    *) labels+=("$(basename "$file")") ;;
+  esac
+done
+labels_json=$(jq -n '$ARGS.positional' --args "${labels[@]}")
+
+if [ ${#commands[@]} -eq 0 ]; then
+  # Every rule once, grouped by the set of files it's in; deny first, then ask, then allow.
+  jq -rs --argjson labels "$labels_json" '
+    [ to_entries[] | .key as $i | (.value.permissions // {}) | to_entries[]
+      | select(.key == "deny" or .key == "ask" or .key == "allow") | .key as $k
+      | .value[] | {k: $k, rule: ., i: $i} ]
+    | group_by([.k, .rule])
+    | map({k: .[0].k, rule: .[0].rule, in: (map(.i) | unique)})
+    | group_by(.in)
+    | sort_by((.[0].in | length) != ($labels | length), .[0].in)[]
+    | (.[0].in | map($labels[.])) as $where
+    | "\(if ($where | length) == ($labels | length) and ($labels | length) > 1 then "In every file"
+         elif ($where | length) == 1 then "Only in \($where[0])"
+         else "In \($where | join(" and "))" end) (\(length)):",
+      (sort_by({deny: 0, ask: 1, allow: 2}[.k], .rule)[] | "  \((.k + "     ")[:5])  \(.rule)"),
+      ""
+  ' "${files[@]}"
+  exit 0
+fi
+
+commands_json=$(jq -n '$ARGS.positional' --args "${commands[@]}")
+jq -rs --argjson labels "$labels_json" --argjson commands "$commands_json" '
+  # The pattern of a Bash rule, with \( and \) as plain parentheses: "Bash" and "Bash(*)" match
+  # everything; other tools give null.
+  def pattern:
+    if . == "Bash" then "*"
+    elif startswith("Bash(") and endswith(")") then .[5:-1] | gsub("\\\\(?<c>[()])"; .c)
+    else null end;
+  def regex: gsub("(?<c>[.^$+?(){}\\[\\]|\\\\])"; "\\\(.c)") | gsub("\\*"; ".*");
+  def matches($command):
+    sub(":\\*$"; " *") as $p
+    | ($command | test("^" + ($p | regex) + "$"))
+      or (($p | endswith(" *")) and ([$p | scan("\\*")] | length) == 1 and $command == $p[:-2]);
+  def decide($permissions; $command):
+    def hit($k): any(($permissions[$k] // [])[] | pattern | select(. != null); matches($command));
+    if hit("deny") then "denied" elif hit("ask") then "asks" elif hit("allow") then "runs"
+    else "default" end;
+  (map(.permissions // {})) as $each
+  | ($each | reduce .[] as $p ({}; .deny += ($p.deny // []) | .ask += ($p.ask // [])
+      | .allow += ($p.allow // []))) as $all
+  | (["Command"] + $labels + (if ($labels | length) > 1 then ["all"] else [] end)),
+    ($commands[] as $c
+      | [$c] + [$each[] | decide(.; $c)]
+        + (if ($labels | length) > 1 then [decide($all; $c)] else [] end))
+  | @tsv
+' "${files[@]}" | column -t -s "$(printf '\t')"

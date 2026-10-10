@@ -43,7 +43,9 @@
       "Bash(docker context ls*)",
       "Bash(docker context show*)",
       "Bash(~/.claude/scripts/cleanScratch *)",
-      "Bash(/Users/rubenfa/.claude/scripts/cleanScratch *)"
+      "Bash(~/.claude/scripts/compareRules*)",
+      "Bash(~/.claude/scripts/pruneMergedBranches)",
+      "Bash(~/.claude/scripts/pruneMergedBranches --dry-run)"
     ],
     "deny": [
       "Bash(git push *--force*)",

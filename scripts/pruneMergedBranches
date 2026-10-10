@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# Deletes local branches whose pull request was merged, and their GitHub copies if still there.
+# Git can't tell that a squash-merged branch is merged (its commits never reach main), so each
+# branch is matched to its pull request instead. A branch is deleted only when a merged PR's last
+# commit is exactly the branch's tip, and the GitHub copy, if any, is that same commit. Every other
+# branch is kept and listed with the reason. main and branches checked out here or in another
+# worktree are never deleted.
+#
+# --dry-run only lists what would be deleted and changes nothing. ~/.claude/settings.json allows
+# both forms in every repository (see ~/.claude/CLAUDE.md): the real run only deletes branches
+# whose work is already on main through their merged PR, and a deleted branch's commits stay in
+# the PR and in git's reflog.
+#
+# User-level copy of scripts/pruneMergedBranches in the wedding101 repository; keep the two the
+# same.
+#
+# Usage: ~/.claude/scripts/pruneMergedBranches [--dry-run]
+set -euo pipefail
+
+dry_run=false
+case "${1:-}" in
+  "") ;;
+  --dry-run) dry_run=true ;;
+  -h | --help)
+    sed -n '2,/^set -euo/p' "$0" | sed -e '$d' -e 's/^# \{0,1\}//'
+    exit 0
+    ;;
+  *)
+    echo "Unknown option: $1 (see --help)" >&2
+    exit 2
+    ;;
+esac
+
+stop() {
+  echo "✘ $1" >&2
+  exit 1
+}
+
+cd "$(git rev-parse --show-toplevel)"
+base=main
+
+# Merged pull requests, newest first, as "branch<TAB>last commit<TAB>number<TAB>merge date".
+merged=$(gh pr list --state merged --limit 1000 --json headRefName,headRefOid,number,mergedAt \
+  --jq '.[] | [.headRefName, .headRefOid, (.number | tostring), .mergedAt[0:10]] | @tsv') \
+  || stop "Couldn't list the merged pull requests. Is gh logged in (gh auth status)?"
+# Branches on GitHub, as "commit<TAB>refs/heads/<branch>".
+remote=$(git ls-remote --heads origin) || stop "Couldn't list the branches on GitHub."
+# Branches checked out in a worktree, this one included: git refuses to delete those.
+checked_out=$(git worktree list --porcelain | sed -n 's|^branch refs/heads/||p')
+
+deletions=() # "branch commit number date github-commit"
+kept=()      # "branch|reason"
+while read -r branch tip; do
+  [ "$branch" != "$base" ] || continue
+  if grep -qxF -- "$branch" <<< "$checked_out"; then
+    kept+=("$branch|checked out here or in another worktree")
+    continue
+  fi
+  prs=$(awk -F '\t' -v b="$branch" '$1 == b' <<< "$merged")
+  if [ -z "$prs" ]; then
+    kept+=("$branch|no merged pull request")
+    continue
+  fi
+  pr=$(awk -F '\t' -v t="$tip" '$2 == t' <<< "$prs" | head -n 1)
+  if [ -z "$pr" ]; then
+    kept+=("$branch|not the last commit of merged PR #$(head -n 1 <<< "$prs" | cut -f 3); commits were added or changed since")
+    continue
+  fi
+  on_github=$(awk -v r="refs/heads/$branch" '$2 == r { print $1 }' <<< "$remote")
+  if [ -n "$on_github" ] && [ "$on_github" != "$tip" ]; then
+    kept+=("$branch|the GitHub copy has other commits than PR #$(cut -f 3 <<< "$pr")")
+    continue
+  fi
+  deletions+=("$branch $tip $(cut -f 3,4 <<< "$pr" | tr '\t' ' ') ${on_github:--}")
+done < <(git for-each-ref --format='%(refname:short) %(objectname)' refs/heads/)
+
+if [ ${#kept[@]} -gt 0 ]; then
+  echo "Keeping:"
+  for entry in "${kept[@]}"; do
+    printf '  %-36s %s\n' "${entry%%|*}" "${entry#*|}"
+  done
+  echo
+fi
+
+if [ ${#deletions[@]} -eq 0 ]; then
+  echo "✔ No merged branches to delete."
+  exit 0
+fi
+
+if $dry_run; then
+  echo "Would delete (the PR was merged and its last commit is the branch's tip):"
+  for entry in "${deletions[@]}"; do
+    read -r branch tip number date on_github <<< "$entry"
+    where="local branch"
+    [ "$on_github" = - ] || where="local branch and its GitHub copy"
+    printf '  %-36s %s  PR #%s, merged %s (%s)\n' "$branch" "${tip:0:7}" "$number" "$date" "$where"
+  done
+  echo
+  echo "✔ Dry run: nothing was deleted. Run without --dry-run to delete the ${#deletions[@]} above."
+  exit 0
+fi
+
+for entry in "${deletions[@]}"; do
+  read -r branch tip number date on_github <<< "$entry"
+  if [ "$on_github" != - ]; then
+    git push -q origin --delete "$branch" || stop "Couldn't delete $branch on GitHub; it's kept locally too."
+    echo "✔ Deleted $branch on GitHub (PR #$number)"
+  fi
+  git branch -q -D "$branch"
+  echo "✔ Deleted $branch (was ${tip:0:7}, PR #$number, merged $date)"
+done
